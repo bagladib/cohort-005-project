@@ -9,6 +9,7 @@ import {
   LayoutDashboard,
   GraduationCap,
   MessageSquare,
+  ReceiptText,
   Shield,
   Tag,
   Users,
@@ -78,6 +79,12 @@ const navItems: NavItem[] = [
     label: "Questions",
     to: "/instructor/questions",
     icon: <MessageSquare className="size-4" />,
+    roles: [UserRole.Instructor, UserRole.Admin],
+  },
+  {
+    label: "Refund Requests",
+    to: "/instructor/refunds",
+    icon: <ReceiptText className="size-4" />,
     roles: [UserRole.Instructor, UserRole.Admin],
   },
   {
