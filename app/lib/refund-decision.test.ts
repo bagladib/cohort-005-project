@@ -11,10 +11,7 @@ vi.mock("~/db", () => ({
   },
 }));
 
-import {
-  decideRefundRequest,
-  getDeclinedRefundRequests,
-} from "./refund-decision";
+import { decideRefundRequest } from "./refund-decision";
 
 const VALID_REASON = "The course covers what you asked for in lesson one.";
 
@@ -36,6 +33,27 @@ function getRefund() {
     .from(schema.refunds)
     .where(eq(schema.refunds.id, refundId))
     .get()!;
+}
+
+/** The HTTP status of the response `decide` throws, or a failure if it does not throw. */
+function thrownStatus(decide: () => unknown) {
+  try {
+    decide();
+  } catch (error) {
+    // What `data(...)` from react-router builds.
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "type" in error &&
+      error.type === "DataWithResponseInit" &&
+      "init" in error
+    ) {
+      const init = error.init as ResponseInit | null;
+      return init?.status;
+    }
+    throw error;
+  }
+  throw new Error("Expected the decision to be refused with a thrown response.");
 }
 
 function isEnrolled() {
@@ -90,21 +108,21 @@ describe("decideRefundRequest", () => {
     it("refuses an Instructor who does not own the Course", () => {
       const other = addUser("other@example.com", schema.UserRole.Instructor);
 
-      const result = decideRefundRequest(refundId, other.id, {
-        intent: "approve",
-      });
+      const status = thrownStatus(() =>
+        decideRefundRequest(refundId, other.id, { intent: "approve" })
+      );
 
-      expect(result).toMatchObject({ ok: false, status: 403 });
+      expect(status).toBe(403);
       expect(getRefund().status).toBe(schema.RefundStatus.Requested);
       expect(isEnrolled()).toBe(true);
     });
 
     it("refuses the learner", () => {
-      const result = decideRefundRequest(refundId, base.user.id, {
-        intent: "approve",
-      });
+      const status = thrownStatus(() =>
+        decideRefundRequest(refundId, base.user.id, { intent: "approve" })
+      );
 
-      expect(result).toMatchObject({ ok: false, status: 403 });
+      expect(status).toBe(403);
       expect(getRefund().status).toBe(schema.RefundStatus.Requested);
     });
 
@@ -120,11 +138,11 @@ describe("decideRefundRequest", () => {
     });
 
     it("reports a Refund Request that does not exist as 404", () => {
-      const result = decideRefundRequest(9999, base.instructor.id, {
-        intent: "approve",
-      });
+      const status = thrownStatus(() =>
+        decideRefundRequest(9999, base.instructor.id, { intent: "approve" })
+      );
 
-      expect(result).toMatchObject({ ok: false, status: 404 });
+      expect(status).toBe(404);
     });
   });
 
@@ -195,14 +213,14 @@ describe("decideRefundRequest", () => {
       ["missing", undefined],
       ["under 10 characters once trimmed", "   too short   "],
       ["over 1000 characters", "x".repeat(1001)],
-    ])("refuses a reason that is %s with 400", (_label, reason) => {
+    ])("refuses a reason that is %s with field errors", (_label, reason) => {
       const result = decideRefundRequest(refundId, base.instructor.id, {
         intent: "decline",
         reason,
       });
 
-      expect(result).toMatchObject({ ok: false, status: 400 });
-      if (!result.ok) expect(result.errors?.reason).toBeTruthy();
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.errors.reason).toBeTruthy();
       expect(getRefund().status).toBe(schema.RefundStatus.Requested);
     });
 
@@ -216,12 +234,12 @@ describe("decideRefundRequest", () => {
     });
   });
 
-  it("refuses an unknown intent with 400", () => {
+  it("refuses an unknown intent with field errors", () => {
     const result = decideRefundRequest(refundId, base.instructor.id, {
       intent: "refund-half",
     });
 
-    expect(result).toMatchObject({ ok: false, status: 400 });
+    expect(result.ok).toBe(false);
     expect(getRefund().status).toBe(schema.RefundStatus.Requested);
   });
 
@@ -231,9 +249,11 @@ describe("decideRefundRequest", () => {
         intent: "approve",
       });
 
-      if (!result.ok) throw new Error(result.error);
+      if (!result.ok) throw new Error("Expected the decision to succeed.");
       expect(result.email.to).toBe("test@example.com");
-      expect(result.email.subject).toContain("Test Course");
+      expect(result.email.subject).toBe(
+        "Refund Request approved — Test Course"
+      );
       expect(result.email.body).toContain("approved");
       expect(result.email.body).toContain("$100");
     });
@@ -244,37 +264,13 @@ describe("decideRefundRequest", () => {
         reason: VALID_REASON,
       });
 
-      if (!result.ok) throw new Error(result.error);
+      if (!result.ok) throw new Error("Expected the decision to succeed.");
       expect(result.email.to).toBe("test@example.com");
+      expect(result.email.subject).toBe(
+        "Refund Request declined — Test Course"
+      );
       expect(result.email.body).toContain("declined");
       expect(result.email.body).toContain(VALID_REASON);
-    });
-  });
-
-  describe("getDeclinedRefundRequests", () => {
-    it("lists the learner's Declined Refund Requests with the decline reason", () => {
-      decideRefundRequest(refundId, base.instructor.id, {
-        intent: "decline",
-        reason: VALID_REASON,
-      });
-
-      expect(getDeclinedRefundRequests(base.user.id)).toEqual([
-        expect.objectContaining({
-          id: refundId,
-          courseTitle: "Test Course",
-          courseSlug: "test-course",
-          declineReason: VALID_REASON,
-        }),
-      ]);
-    });
-
-    it("leaves out Requested and Approved Refund Requests, and other learners'", () => {
-      expect(getDeclinedRefundRequests(base.user.id)).toEqual([]);
-
-      decideRefundRequest(refundId, base.instructor.id, { intent: "approve" });
-
-      expect(getDeclinedRefundRequests(base.user.id)).toEqual([]);
-      expect(getDeclinedRefundRequests(base.instructor.id)).toEqual([]);
     });
   });
 
@@ -282,12 +278,14 @@ describe("decideRefundRequest", () => {
     it("refuses a second decision on an Approved request with 409", () => {
       decideRefundRequest(refundId, base.instructor.id, { intent: "approve" });
 
-      const result = decideRefundRequest(refundId, base.instructor.id, {
-        intent: "decline",
-        reason: VALID_REASON,
-      });
+      const status = thrownStatus(() =>
+        decideRefundRequest(refundId, base.instructor.id, {
+          intent: "decline",
+          reason: VALID_REASON,
+        })
+      );
 
-      expect(result).toMatchObject({ ok: false, status: 409 });
+      expect(status).toBe(409);
       expect(getRefund().status).toBe(schema.RefundStatus.Approved);
       expect(getRefund().declineReason).toBeNull();
     });
@@ -298,11 +296,11 @@ describe("decideRefundRequest", () => {
         reason: VALID_REASON,
       });
 
-      const result = decideRefundRequest(refundId, base.instructor.id, {
-        intent: "approve",
-      });
+      const status = thrownStatus(() =>
+        decideRefundRequest(refundId, base.instructor.id, { intent: "approve" })
+      );
 
-      expect(result).toMatchObject({ ok: false, status: 409 });
+      expect(status).toBe(409);
       expect(getRefund().status).toBe(schema.RefundStatus.Declined);
       expect(isEnrolled()).toBe(true);
     });

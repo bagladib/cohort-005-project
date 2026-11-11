@@ -11,12 +11,14 @@ export type DeclinedRefundRequest = {
   id: number;
   /** The learner's reason for that request. */
   reason: string;
+  /** The reason the Instructor or Admin gave the learner for declining it. */
+  declineReason: string | null;
   requestedAt: string;
   resolvedAt: string | null;
 };
 
-/** Who is looking at the refund queue. */
-export type RefundReviewer = { userId: number; isAdmin: boolean };
+/** The Instructor or Admin who decides Refund Requests. */
+export type RefundDecider = { userId: number; isAdmin: boolean };
 
 export type RequestedRefundRequest = {
   id: number;
@@ -36,15 +38,15 @@ export type RequestedRefundRequest = {
 };
 
 /**
- * The Requested Refund Requests a reviewer may decide: an Admin sees every
+ * The Requested Refund Requests a decider may decide: an Admin sees every
  * Course's, an Instructor only their own Courses'. Oldest first.
  */
 export function getRequestedRefundRequests(
-  reviewer: RefundReviewer
+  decider: RefundDecider
 ): RequestedRefundRequest[] {
   const conditions = [eq(refunds.status, RefundStatus.Requested)];
-  if (!reviewer.isAdmin) {
-    conditions.push(eq(courses.instructorId, reviewer.userId));
+  if (!decider.isAdmin) {
+    conditions.push(eq(courses.instructorId, decider.userId));
   }
 
   const rows = db
@@ -65,22 +67,34 @@ export function getRequestedRefundRequests(
     .orderBy(asc(refunds.requestedAt), asc(refunds.id))
     .all();
 
-  return rows.map((row) => ({
-    ...row,
-    eligibility: getRefundEligibility(row.purchaseId, {
+  return rows.flatMap((row) => {
+    const eligibility = getRefundEligibility(row.purchaseId, {
       windowJudgedOn: new Date(row.requestedAt),
-    })!,
-    earlierDeclined: getDeclinedRefundRequests(row.purchaseId),
-  }));
+    });
+    // The inner join on purchases means the Purchase exists; this only
+    // narrows the type.
+    if (!eligibility) return [];
+
+    return [
+      {
+        ...row,
+        eligibility,
+        earlierDeclined: getEarlierDeclinedRefundRequests(row.purchaseId),
+      },
+    ];
+  });
 }
 
 // A Purchase has at most one Requested Refund Request at a time, and a new one
 // can only be made after a decision, so every Declined one came before it.
-function getDeclinedRefundRequests(purchaseId: number): DeclinedRefundRequest[] {
+function getEarlierDeclinedRefundRequests(
+  purchaseId: number
+): DeclinedRefundRequest[] {
   return db
     .select({
       id: refunds.id,
       reason: refunds.reason,
+      declineReason: refunds.declineReason,
       requestedAt: refunds.requestedAt,
       resolvedAt: refunds.resolvedAt,
     })

@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { judgeRefundEligibility, type RefundFacts } from "./refund-eligibility";
+import {
+  judgeRefundEligibility,
+  listRefundRules,
+  type RefundFacts,
+} from "./refund-eligibility";
 
 // A US purchase (no purchasing-power discount) at list price, nothing watched.
 function facts(overrides: Partial<RefundFacts> = {}): RefundFacts {
@@ -149,5 +153,29 @@ describe("judgeRefundEligibility", () => {
 
       expect(result.refundableAmount).toBe(10000);
     });
+  });
+});
+
+describe("listRefundRules", () => {
+  it("labels every rule from the limits and says whether it passed", () => {
+    const eligibility = judgeRefundEligibility(
+      facts({ watchedSeconds: 3 * 60 * 60 }),
+      new Date(2026, 0, 5, 12)
+    );
+
+    expect(listRefundRules(eligibility)).toEqual([
+      {
+        rule: "refundWindow",
+        label: "Requested inside the 14-day Refund Window",
+        passed: true,
+      },
+      { rule: "watchTime", label: "Under 2 hours of video watched", passed: false },
+      {
+        rule: "completion",
+        label: "Under 50% of the lessons completed",
+        passed: true,
+      },
+      { rule: "teamSeat", label: "Not a claimed team seat", passed: true },
+    ]);
   });
 });

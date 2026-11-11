@@ -1,11 +1,16 @@
 import { useState } from "react";
 import { Link, isRouteErrorResponse, useFetcher } from "react-router";
 import type { Route } from "./+types/instructor.refunds";
+import type { action as decideAction } from "./instructor.refunds.$refundId";
 import { requireInstructorOrAdmin } from "~/lib/access.server";
 import {
   getRequestedRefundRequests,
   type RequestedRefundRequest,
 } from "~/lib/refund-review";
+import {
+  listRefundRules,
+  type RefundRuleResult,
+} from "~/lib/refund-eligibility";
 import { Button } from "~/components/ui/button";
 import { Card, CardContent } from "~/components/ui/card";
 import { Label } from "~/components/ui/label";
@@ -22,19 +27,18 @@ export async function loader({ request }: Route.LoaderArgs) {
   const { userId, isAdmin } = await requireInstructorOrAdmin(request);
 
   return {
-    refundRequests: getRequestedRefundRequests({ userId, isAdmin }),
+    refundRequests: getRequestedRefundRequests({ userId, isAdmin }).map(
+      (refundRequest) => ({
+        ...refundRequest,
+        ruleResults: listRefundRules(refundRequest.eligibility),
+      })
+    ),
     isAdmin,
   };
 }
 
-const RULE_LABELS: Record<
-  keyof RequestedRefundRequest["eligibility"]["rules"],
-  string
-> = {
-  refundWindow: "Requested inside the Refund Window",
-  watchTime: "Under 2 hours of video watched",
-  completion: "Under half the lessons completed",
-  teamSeat: "Not a claimed team seat",
+type RefundRequestRow = RequestedRefundRequest & {
+  ruleResults: RefundRuleResult[];
 };
 
 function formatDate(iso: string) {
@@ -47,8 +51,10 @@ function formatDate(iso: string) {
 
 function EligibilityPanel({
   eligibility,
+  ruleResults,
 }: {
   eligibility: RequestedRefundRequest["eligibility"];
+  ruleResults: RefundRuleResult[];
 }) {
   return (
     <div className="rounded-md border p-4">
@@ -69,10 +75,7 @@ function EligibilityPanel({
         </span>
       </div>
       <ul className="space-y-1 text-sm">
-        {(
-          Object.keys(RULE_LABELS) as Array<keyof typeof RULE_LABELS>
-        ).map((rule) => {
-          const passed = eligibility.rules[rule].passed;
+        {ruleResults.map(({ rule, label, passed }) => {
           return (
             <li key={rule} className="flex items-center gap-2">
               {passed ? (
@@ -81,7 +84,7 @@ function EligibilityPanel({
                 <X className="size-4 text-destructive" aria-hidden />
               )}
               <span className={cn(!passed && "text-destructive")}>
-                {RULE_LABELS[rule]}
+                {label}
               </span>
               <span className="sr-only">{passed ? "passes" : "fails"}</span>
             </li>
@@ -100,9 +103,12 @@ function EligibilityPanel({
 function RefundRequestCard({
   refundRequest,
 }: {
-  refundRequest: RequestedRefundRequest;
+  refundRequest: RefundRequestRow;
 }) {
-  const fetcher = useFetcher();
+  const fetcher = useFetcher<typeof decideAction>();
+  // The decision action returns field errors (400) when the form is invalid.
+  const errors =
+    fetcher.data && !fetcher.data.ok ? fetcher.data.errors : undefined;
   const [declineReason, setDeclineReason] = useState("");
   const submitting = fetcher.state !== "idle";
   const decisionPath = `/instructor/refunds/${refundRequest.id}`;
@@ -131,7 +137,10 @@ function RefundRequestCard({
           {refundRequest.reason}
         </blockquote>
 
-        <EligibilityPanel eligibility={refundRequest.eligibility} />
+        <EligibilityPanel
+          eligibility={refundRequest.eligibility}
+          ruleResults={refundRequest.ruleResults}
+        />
 
         {refundRequest.earlierDeclined.length > 0 && (
           <div className="text-sm">
@@ -145,6 +154,11 @@ function RefundRequestCard({
                     {formatDate(declined.requestedAt)}
                   </span>
                   : &ldquo;{declined.reason}&rdquo;
+                  {declined.declineReason && (
+                    <span className="block pl-4">
+                      Declined because: &ldquo;{declined.declineReason}&rdquo;
+                    </span>
+                  )}
                 </li>
               ))}
             </ul>
@@ -175,7 +189,24 @@ function RefundRequestCard({
               onChange={(event) => setDeclineReason(event.target.value)}
               rows={2}
               required
+              aria-invalid={errors?.reason ? true : undefined}
+              aria-describedby={
+                errors?.reason
+                  ? `decline-reason-error-${refundRequest.id}`
+                  : undefined
+              }
             />
+            {errors?.reason && (
+              <p
+                id={`decline-reason-error-${refundRequest.id}`}
+                className="text-sm text-destructive"
+              >
+                {errors.reason}
+              </p>
+            )}
+            {errors?.intent && (
+              <p className="text-sm text-destructive">{errors.intent}</p>
+            )}
             <Button
               type="submit"
               size="sm"

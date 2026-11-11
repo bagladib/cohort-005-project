@@ -9,8 +9,9 @@ import { parseFormData, parseParams } from "~/lib/validation";
 import { formatPrice } from "~/lib/utils";
 import {
   getRefundEligibility,
-  REFUND_WINDOW_DAYS,
+  listRefundRules,
 } from "~/lib/refund-eligibility";
+import { getBlockingRefundRequest } from "~/lib/learner-refunds";
 
 const refundParamsSchema = z.object({
   slug: z.string().min(1),
@@ -34,19 +35,6 @@ function getLatestPurchase(userId: number, courseId: number) {
     .from(purchases)
     .where(and(eq(purchases.userId, userId), eq(purchases.courseId, courseId)))
     .orderBy(sql`${purchases.createdAt} desc`)
-    .get();
-}
-
-function getRequestedRefund(purchaseId: number) {
-  return db
-    .select()
-    .from(refunds)
-    .where(
-      and(
-        eq(refunds.purchaseId, purchaseId),
-        eq(refunds.status, RefundStatus.Requested)
-      )
-    )
     .get();
 }
 
@@ -106,10 +94,19 @@ export async function action({ params, request }: Route.ActionArgs) {
     throw data("You have not bought this course.", { status: 403 });
   }
 
-  if (getRequestedRefund(purchase.id)) {
+  // Not part of Refund Eligibility: these are about the Refund Requests
+  // already made on this Purchase, not about the Purchase itself.
+  const blocking = getBlockingRefundRequest(purchase.id);
+
+  if (blocking?.status === RefundStatus.Requested) {
     throw data("You already have a Refund Request on this purchase.", {
       status: 409,
     });
+  }
+
+  // Approved is final (ADR 0002): the Refund has been paid already.
+  if (blocking?.status === RefundStatus.Approved) {
+    throw data("This purchase has already been refunded.", { status: 409 });
   }
 
   // Refund Eligibility binds when a learner makes a Refund Request (ADR 0001),
@@ -120,27 +117,13 @@ export async function action({ params, request }: Route.ActionArgs) {
     throw data("You have not bought this course.", { status: 403 });
   }
 
-  const { rules } = eligibility;
+  const unmet = listRefundRules(eligibility).filter((rule) => !rule.passed);
 
-  if (!rules.teamSeat.passed) {
-    throw data("A claimed team seat cannot be refunded.", { status: 403 });
-  }
-
-  if (!rules.refundWindow.passed) {
-    throw data(`The ${REFUND_WINDOW_DAYS}-day window has closed.`, {
-      status: 403,
-    });
-  }
-
-  if (!rules.watchTime.passed) {
-    throw data("You have watched too much of this course to get a refund.", {
-      status: 403,
-    });
-  }
-
-  if (!rules.completion.passed) {
+  if (unmet.length > 0) {
     throw data(
-      "You have completed too much of this course to get a refund.",
+      `This purchase cannot be refunded. Not met: ${unmet
+        .map((rule) => rule.label)
+        .join("; ")}.`,
       { status: 403 }
     );
   }

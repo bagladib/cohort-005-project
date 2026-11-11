@@ -163,17 +163,19 @@ describe("getRequestedRefundRequests", () => {
   });
 
   describe("earlier Declined Refund Requests", () => {
-    it("lists earlier Declined requests on the same Purchase, oldest first", () => {
+    it("lists earlier Declined requests on the same Purchase with the decline reason, oldest first", () => {
       const bought = purchase();
       const first = refundRequest(bought.id, {
         status: schema.RefundStatus.Declined,
         reason: "Too hard",
+        declineReason: "The first lessons are meant to be hard.",
         requestedAt: new Date(2026, 0, 2, 9).toISOString(),
         resolvedAt: new Date(2026, 0, 3, 9).toISOString(),
       });
       const second = refundRequest(bought.id, {
         status: schema.RefundStatus.Declined,
         reason: "Still too hard",
+        declineReason: "Nothing has changed since the last request.",
         requestedAt: new Date(2026, 0, 3, 12).toISOString(),
         resolvedAt: new Date(2026, 0, 4, 9).toISOString(),
       });
@@ -185,12 +187,14 @@ describe("getRequestedRefundRequests", () => {
         {
           id: first.id,
           reason: "Too hard",
+          declineReason: "The first lessons are meant to be hard.",
           requestedAt: first.requestedAt,
           resolvedAt: first.resolvedAt,
         },
         {
           id: second.id,
           reason: "Still too hard",
+          declineReason: "Nothing has changed since the last request.",
           requestedAt: second.requestedAt,
           resolvedAt: second.resolvedAt,
         },

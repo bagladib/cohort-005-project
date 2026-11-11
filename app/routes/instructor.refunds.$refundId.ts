@@ -25,14 +25,10 @@ export async function action({ params, request }: Route.ActionArgs) {
     Object.fromEntries(formData)
   );
 
+  // 404, 403 and 409 are thrown by decideRefundRequest; an invalid form comes
+  // back as field errors for the screen to show.
   if (!result.ok) {
-    if (result.status === 400) {
-      return data(
-        { ok: false as const, error: result.error, errors: result.errors ?? {} },
-        { status: 400 }
-      );
-    }
-    throw data(result.error, { status: result.status });
+    return data({ ok: false as const, errors: result.errors }, { status: 400 });
   }
 
   // No mail transport is wired up yet, so the message goes to the server log.

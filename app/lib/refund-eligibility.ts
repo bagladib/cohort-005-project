@@ -39,6 +39,40 @@ export type RefundEligibility = {
   lastDayInWindow: string;
 };
 
+export type RefundRuleName = keyof RefundEligibility["rules"];
+
+export type RefundRuleResult = {
+  rule: RefundRuleName;
+  label: string;
+  passed: boolean;
+};
+
+// Built from the limits above so the wording cannot drift from the rules.
+const RULE_LABELS: Record<RefundRuleName, string> = {
+  refundWindow: `Requested inside the ${REFUND_WINDOW_DAYS}-day Refund Window`,
+  watchTime: `Under ${REFUND_WATCH_LIMIT_SECONDS / 3600} hours of video watched`,
+  completion: `Under ${REFUND_COMPLETION_LIMIT * 100}% of the lessons completed`,
+  teamSeat: "Not a claimed team seat",
+};
+
+const RULE_ORDER: RefundRuleName[] = [
+  "refundWindow",
+  "watchTime",
+  "completion",
+  "teamSeat",
+];
+
+/** Each Refund Eligibility rule, labelled for people to read, in a fixed order. */
+export function listRefundRules(
+  eligibility: RefundEligibility
+): RefundRuleResult[] {
+  return RULE_ORDER.map((rule) => ({
+    rule,
+    label: RULE_LABELS[rule],
+    passed: eligibility.rules[rule].passed,
+  }));
+}
+
 // The window is counted in whole calendar days, not hours: a purchase at
 // 23:00 still gets the whole of its fourteenth day.
 function calendarDay(when: Date): string {

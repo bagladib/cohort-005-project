@@ -5,6 +5,7 @@ import { z } from "zod";
 import type { Route } from "./+types/courses.$slug";
 import { getCurrentUserId } from "~/lib/session";
 import { getRefundEligibility } from "~/lib/refund-eligibility";
+import { getBlockingRefundRequest } from "~/lib/learner-refunds";
 import { db } from "~/db";
 import {
   courses,
@@ -16,9 +17,7 @@ import {
   lessonProgress,
   courseRatings,
   purchases,
-  refunds,
   LessonProgressStatus,
-  RefundStatus,
 } from "~/db/schema";
 import { eq, and, or, sql } from "drizzle-orm";
 import { Card, CardContent, CardHeader } from "~/components/ui/card";
@@ -371,28 +370,16 @@ function getPurchaseForCourse(userId: number, courseId: number) {
     .get();
 }
 
-function getRequestedRefund(purchaseId: number) {
-  return db
-    .select({ id: refunds.id })
-    .from(refunds)
-    .where(
-      and(
-        eq(refunds.purchaseId, purchaseId),
-        eq(refunds.status, RefundStatus.Requested)
-      )
-    )
-    .get();
-}
-
 /**
  * The Refund the learner is offered, or null if they have no Purchase, already
- * have a Refund Request in Requested, or the Purchase lacks Refund Eligibility.
+ * have a Refund Request that is Requested or Approved, or the Purchase lacks
+ * Refund Eligibility.
  */
 function getRefundOffer(userId: number, courseId: number) {
   const purchase = getPurchaseForCourse(userId, courseId);
 
   if (!purchase) return null;
-  if (getRequestedRefund(purchase.id)) return null;
+  if (getBlockingRefundRequest(purchase.id)) return null;
 
   const eligibility = getRefundEligibility(purchase.id);
   if (!eligibility?.eligible) return null;

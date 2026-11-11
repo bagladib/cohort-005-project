@@ -23,7 +23,7 @@ import { data, isRouteErrorResponse, Link } from "react-router";
 import { db } from "~/db";
 import { and, eq } from "drizzle-orm";
 import { formatPrice } from "~/lib/utils";
-import { getDeclinedRefundRequests } from "~/lib/refund-decision";
+import { getLearnerDeclinedRefundRequests } from "~/lib/learner-refunds";
 
 const settingsSchema = z.object({
   name: z.string().trim().min(1, "Name cannot be empty."),
@@ -85,7 +85,7 @@ export async function loader({ request }: Route.LoaderArgs) {
       role: currentUser.role,
     },
     requestedRefunds,
-    declinedRefunds: getDeclinedRefundRequests(currentUserId),
+    declinedRefunds: getLearnerDeclinedRefundRequests(currentUserId),
   };
 }
 

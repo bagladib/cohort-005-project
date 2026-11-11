@@ -1,4 +1,5 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
+import { data } from "react-router";
 import { z } from "zod";
 import { db } from "~/db";
 import {
@@ -40,21 +41,20 @@ export type RefundDecisionSuccess = {
   email: RefundDecisionEmail;
 };
 
-export type RefundDecisionFailure = {
+/** The decision form was invalid; nothing was decided. */
+export type RefundDecisionInvalid = {
   ok: false;
-  status: 400 | 403 | 404 | 409;
-  error: string;
-  /** Field errors, first message per field, when status is 400. */
-  errors?: Record<string, string>;
+  /** Field errors, first message per field. */
+  errors: Record<string, string>;
 };
 
-export type DecideRefundResult = RefundDecisionSuccess | RefundDecisionFailure;
+export type DecideRefundResult = RefundDecisionSuccess | RefundDecisionInvalid;
 
-function fail(
-  status: RefundDecisionFailure["status"],
-  error: string
-): RefundDecisionFailure {
-  return { ok: false, status, error };
+// Decisions are final (ADR 0002), so a second one is a conflict.
+function alreadyDecided() {
+  return data("This Refund Request has already been decided.", {
+    status: 409,
+  });
 }
 
 function buildApprovedEmail(input: {
@@ -65,7 +65,7 @@ function buildApprovedEmail(input: {
 }): RefundDecisionEmail {
   return {
     to: input.learnerEmail,
-    subject: `Refund approved — ${input.courseTitle}`,
+    subject: `Refund Request approved — ${input.courseTitle}`,
     body: [
       `Hi ${input.learnerName},`,
       "",
@@ -86,7 +86,7 @@ function buildDeclinedEmail(input: {
 }): RefundDecisionEmail {
   return {
     to: input.learnerEmail,
-    subject: `Refund declined — ${input.courseTitle}`,
+    subject: `Refund Request declined — ${input.courseTitle}`,
     body: [
       `Hi ${input.learnerName},`,
       "",
@@ -113,8 +113,9 @@ function buildDeclinedEmail(input: {
  * still be Approved. Approving records the Refundable Amount and removes the
  * learner's enrollment.
  *
- * Never throws for an expected refusal; returns `ok: false` with an HTTP
- * status (404, 403, 409, 400 — checked in that order) instead.
+ * Throws a 404, 403 or 409 response (checked in that order) when the
+ * decision cannot be made. An invalid form is returned as `ok: false` with
+ * field errors, for the screen to show next to the fields.
  */
 export function decideRefundRequest(
   refundId: number,
@@ -135,7 +136,7 @@ export function decideRefundRequest(
     .where(eq(refunds.id, refundId))
     .get();
 
-  if (!row) return fail(404, "Refund Request not found.");
+  if (!row) throw data("Refund Request not found.", { status: 404 });
 
   const { refund, purchase, course, learner } = row;
 
@@ -150,15 +151,13 @@ export function decideRefundRequest(
     (decider.role === UserRole.Admin || course.instructorId === decider.id);
 
   if (!mayDecide) {
-    return fail(
-      403,
-      "Only this course's instructor or an admin can decide this Refund Request."
+    throw data(
+      "Only this course's instructor or an admin can decide this Refund Request.",
+      { status: 403 }
     );
   }
 
-  if (refund.status !== RefundStatus.Requested) {
-    return fail(409, "This Refund Request has already been decided.");
-  }
+  if (refund.status !== RefundStatus.Requested) throw alreadyDecided();
 
   const parsed = refundDecisionSchema.safeParse(input);
 
@@ -169,7 +168,7 @@ export function decideRefundRequest(
     )) {
       if (messages?.[0]) errors[field] = messages[0];
     }
-    return { ...fail(400, "Invalid decision."), errors };
+    return { ok: false, errors };
   }
 
   const decision = parsed.data;
@@ -193,9 +192,7 @@ export function decideRefundRequest(
       .where(stillRequested)
       .run();
 
-    if (updated.changes === 0) {
-      return fail(409, "This Refund Request has already been decided.");
-    }
+    if (updated.changes === 0) throw alreadyDecided();
 
     return {
       ok: true,
@@ -215,7 +212,7 @@ export function decideRefundRequest(
     windowJudgedOn: new Date(refund.requestedAt),
   });
 
-  if (!eligibility) return fail(404, "Purchase not found.");
+  if (!eligibility) throw data("Purchase not found.", { status: 404 });
 
   const approved = db.transaction((tx) => {
     const updated = tx
@@ -244,7 +241,7 @@ export function decideRefundRequest(
   });
 
   if (!approved) {
-    return fail(409, "This Refund Request has already been decided.");
+    throw alreadyDecided();
   }
 
   return {
@@ -257,32 +254,4 @@ export function decideRefundRequest(
       amount: eligibility.refundableAmount,
     }),
   };
-}
-
-/**
- * The learner's Declined Refund Requests, newest decision first, with the
- * reason the Instructor or Admin gave.
- */
-export function getDeclinedRefundRequests(learnerId: number) {
-  return db
-    .select({
-      id: refunds.id,
-      courseTitle: courses.title,
-      courseSlug: courses.slug,
-      reason: refunds.reason,
-      declineReason: refunds.declineReason,
-      requestedAt: refunds.requestedAt,
-      resolvedAt: refunds.resolvedAt,
-    })
-    .from(refunds)
-    .innerJoin(purchases, eq(refunds.purchaseId, purchases.id))
-    .innerJoin(courses, eq(purchases.courseId, courses.id))
-    .where(
-      and(
-        eq(purchases.userId, learnerId),
-        eq(refunds.status, RefundStatus.Declined)
-      )
-    )
-    .orderBy(desc(refunds.resolvedAt))
-    .all();
 }
