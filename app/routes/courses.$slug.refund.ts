@@ -3,24 +3,15 @@ import { z } from "zod";
 import type { Route } from "./+types/courses.$slug.refund";
 import { getCurrentUserId } from "~/lib/session";
 import { db } from "~/db";
-import {
-  courses,
-  coupons,
-  lessons,
-  modules,
-  purchases,
-  refunds,
-  users,
-  videoWatchEvents,
-  RefundStatus,
-} from "~/db/schema";
-import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
+import { courses, purchases, refunds, users, RefundStatus } from "~/db/schema";
+import { and, eq, sql } from "drizzle-orm";
 import { parseFormData, parseParams } from "~/lib/validation";
-import { getDiscountForCountry } from "~/lib/ppp";
 import { formatPrice } from "~/lib/utils";
-
-const REFUND_WINDOW_DAYS = 14;
-const MAX_WATCHED_HOURS = 2;
+import {
+  getRefundEligibility,
+  listRefundRules,
+} from "~/lib/refund-eligibility";
+import { getBlockingRefundRequest } from "~/lib/learner-refunds";
 
 const refundParamsSchema = z.object({
   slug: z.string().min(1),
@@ -47,44 +38,6 @@ function getLatestPurchase(userId: number, courseId: number) {
     .get();
 }
 
-function getLessonIdsForCourse(courseId: number): number[] {
-  const rows = db
-    .select({ id: lessons.id })
-    .from(lessons)
-    .innerJoin(modules, eq(lessons.moduleId, modules.id))
-    .where(eq(modules.courseId, courseId))
-    .all();
-
-  return rows.map((row) => row.id);
-}
-
-function getRequestedRefund(purchaseId: number) {
-  return db
-    .select()
-    .from(refunds)
-    .where(
-      and(
-        eq(refunds.purchaseId, purchaseId),
-        eq(refunds.status, RefundStatus.Requested)
-      )
-    )
-    .get();
-}
-
-// The fourteen-day window is counted in whole days, not hours — someone who
-// buys at 23:00 should still get the whole of their fourteenth day.
-function calendarDay(when: Date): string {
-  const month = String(when.getMonth() + 1).padStart(2, "0");
-  const day = String(when.getDate()).padStart(2, "0");
-  return `${when.getFullYear()}-${month}-${day}`;
-}
-
-function lastDayOfWindow(purchasedAtIso: string): string {
-  const deadline = new Date(purchasedAtIso);
-  deadline.setDate(deadline.getDate() + REFUND_WINDOW_DAYS);
-  return calendarDay(deadline);
-}
-
 /**
  * The confirmation the learner gets in their inbox. There is no mail
  * transport wired up yet, so the built message goes to the server log.
@@ -104,9 +57,9 @@ function buildRefundRequestEmail(input: {
       `We have your Refund Request for "${input.courseTitle}".`,
       `The Refund is for ${formatPrice(input.amount)}, the amount you paid.`,
       "",
-      "Our team reviews every Refund Request by hand. You do not need to do anything else — we will email you again when it is done.",
+      "The Course's Instructor or an Admin reviews every Refund Request by hand. You do not need to do anything else — we will email you again when it is done.",
       "",
-      "— The Cadence team",
+      "— Cadence",
     ].join("\n"),
   };
 }
@@ -141,69 +94,39 @@ export async function action({ params, request }: Route.ActionArgs) {
     throw data("You have not bought this course.", { status: 403 });
   }
 
-  if (getRequestedRefund(purchase.id)) {
+  // Not part of Refund Eligibility: these are about the Refund Requests
+  // already made on this Purchase, not about the Purchase itself.
+  const blocking = getBlockingRefundRequest(purchase.id);
+
+  if (blocking?.status === RefundStatus.Requested) {
     throw data("You already have a Refund Request on this purchase.", {
       status: 409,
     });
   }
 
-  // A seat that came out of a team licence, and has been claimed, belongs to
-  // the team — the learner cannot get a refund for it on their own.
-  const claimedSeat = db
-    .select({ id: coupons.id })
-    .from(coupons)
-    .where(
-      and(eq(coupons.purchaseId, purchase.id), isNotNull(coupons.redeemedAt))
-    )
-    .get();
-
-  if (claimedSeat) {
-    throw data("A claimed team seat cannot be refunded.", { status: 403 });
+  // Approved is final (ADR 0002): the Refund has been paid already.
+  if (blocking?.status === RefundStatus.Approved) {
+    throw data("This purchase has already been refunded.", { status: 409 });
   }
 
-  const today = calendarDay(new Date());
-  const withinRefundWindow = today <= lastDayOfWindow(purchase.createdAt);
+  // Refund Eligibility binds when a learner makes a Refund Request (ADR 0001),
+  // so every rule is enforced here, judged as of today.
+  const eligibility = getRefundEligibility(purchase.id);
 
-  if (!withinRefundWindow) {
-    throw data(`The ${REFUND_WINDOW_DAYS}-day window has closed.`, {
-      status: 403,
-    });
+  if (!eligibility) {
+    throw data("You have not bought this course.", { status: 403 });
   }
 
-  const courseLessonIds = getLessonIdsForCourse(course.id);
+  const unmet = listRefundRules(eligibility).filter((rule) => !rule.passed);
 
-  let watchedSeconds = 0;
-  if (courseLessonIds.length > 0) {
-    const furthestPerLesson = db
-      .select({
-        furthest: sql<number>`max(${videoWatchEvents.positionSeconds})`,
-      })
-      .from(videoWatchEvents)
-      .where(
-        and(
-          eq(videoWatchEvents.userId, currentUserId),
-          inArray(videoWatchEvents.lessonId, courseLessonIds)
-        )
-      )
-      .groupBy(videoWatchEvents.lessonId)
-      .all();
-
-    watchedSeconds = furthestPerLesson.reduce(
-      (total, row) => total + row.furthest,
-      0
+  if (unmet.length > 0) {
+    throw data(
+      `This purchase cannot be refunded. Not met: ${unmet
+        .map((rule) => rule.label)
+        .join("; ")}.`,
+      { status: 403 }
     );
   }
-
-  if (watchedSeconds >= MAX_WATCHED_HOURS * 60 * 60) {
-    throw data("You have watched too much of this course to get a refund.", {
-      status: 403,
-    });
-  }
-
-  // A purchase made at a purchasing-power price is refunded at that price,
-  // not at the list price of the course.
-  const pppDiscount = getDiscountForCountry(purchase.country);
-  const refundableAmount = pppDiscount > 0 ? purchase.amountPaid : course.price;
 
   const formData = await request.formData();
   const parsed = parseFormData(formData, refundActionSchema);
@@ -226,7 +149,7 @@ export async function action({ params, request }: Route.ActionArgs) {
     learnerName: learner.name,
     learnerEmail: learner.email,
     courseTitle: course.title,
-    amount: refundableAmount,
+    amount: eligibility.refundableAmount,
   });
 
   console.log(
