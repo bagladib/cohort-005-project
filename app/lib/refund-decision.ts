@@ -73,7 +73,7 @@ function buildApprovedEmail(input: {
       `We are sending you a Refund of ${formatPrice(input.amount)}.`,
       "You no longer have access to the course.",
       "",
-      "— The Cadence team",
+      "— Cadence",
     ].join("\n"),
   };
 }
@@ -96,7 +96,7 @@ function buildDeclinedEmail(input: {
       "",
       "You still have access to the course.",
       "",
-      "— The Cadence team",
+      "— Cadence",
     ].join("\n"),
   };
 }

@@ -57,9 +57,9 @@ function buildRefundRequestEmail(input: {
       `We have your Refund Request for "${input.courseTitle}".`,
       `The Refund is for ${formatPrice(input.amount)}, the amount you paid.`,
       "",
-      "Our team reviews every Refund Request by hand. You do not need to do anything else — we will email you again when it is done.",
+      "The Course's Instructor or an Admin reviews every Refund Request by hand. You do not need to do anything else — we will email you again when it is done.",
       "",
-      "— The Cadence team",
+      "— Cadence",
     ].join("\n"),
   };
 }
