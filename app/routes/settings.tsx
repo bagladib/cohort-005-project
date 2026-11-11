@@ -23,6 +23,7 @@ import { data, isRouteErrorResponse, Link } from "react-router";
 import { db } from "~/db";
 import { and, eq } from "drizzle-orm";
 import { formatPrice } from "~/lib/utils";
+import { getDeclinedRefundRequests } from "~/lib/refund-decision";
 
 const settingsSchema = z.object({
   name: z.string().trim().min(1, "Name cannot be empty."),
@@ -84,6 +85,7 @@ export async function loader({ request }: Route.LoaderArgs) {
       role: currentUser.role,
     },
     requestedRefunds,
+    declinedRefunds: getDeclinedRefundRequests(currentUserId),
   };
 }
 
@@ -122,7 +124,7 @@ export async function action({ request }: Route.ActionArgs) {
 }
 
 export default function Settings({ loaderData }: Route.ComponentProps) {
-  const { user, requestedRefunds } = loaderData;
+  const { user, requestedRefunds, declinedRefunds } = loaderData;
   const fetcher = useFetcher();
   const nameInputRef = useRef<HTMLInputElement>(null);
 
@@ -238,6 +240,44 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
                   {new Date(refundRequest.requestedAt).toLocaleDateString()}
                 </p>
                 <p className="mt-2 text-sm">{refundRequest.reason}</p>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+
+      {declinedRefunds.length > 0 && (
+        <Card className="mt-8 max-w-md">
+          <CardHeader>
+            <h2 className="text-lg font-semibold">Declined Refund Requests</h2>
+            <p className="text-sm text-muted-foreground">
+              No Refund is paid on these. You keep access to the course.
+            </p>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {declinedRefunds.map((refundRequest) => (
+              <div key={refundRequest.id} className="rounded-md border p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <Link
+                    to={`/courses/${refundRequest.courseSlug}`}
+                    className="font-medium hover:underline"
+                  >
+                    {refundRequest.courseTitle}
+                  </Link>
+                  <span className="shrink-0 rounded-full bg-red-100 px-2.5 py-0.5 text-xs font-medium text-red-800 dark:bg-red-900/30 dark:text-red-300">
+                    Declined
+                  </span>
+                </div>
+                {refundRequest.resolvedAt && (
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    Declined on{" "}
+                    {new Date(refundRequest.resolvedAt).toLocaleDateString()}
+                  </p>
+                )}
+                <p className="mt-2 text-sm">
+                  <span className="font-medium">Reason: </span>
+                  {refundRequest.declineReason}
+                </p>
               </div>
             ))}
           </CardContent>
